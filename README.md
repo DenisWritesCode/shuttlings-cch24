@@ -12,4 +12,4 @@ With that said, let's get to it. I assume you have `cargo` and `shuttle` initili
 ### Task 1: Hello, bird!
 
 - This challenge is really simple, find the line in *src/main.rs* that reads `Hello World!` and edit it to read `Hello, bird!`. There, done!
-
+- ![Task 1 Solution](images/Task-1.png)
