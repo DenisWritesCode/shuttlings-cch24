@@ -5,7 +5,7 @@
 I will be using this repo to provide a walkthrough for anyone interested in learning how to solve such challenges.
 I will share my thoughts and also take-aways, and whenever I have enough time on my hands, I will also go into more detail about each solution, try to optimize solutions and maybe, just maybe provide more material to help expound the concepts further.
 
-With that said, let's get to it. I assume you have `cargo` and `shuttle` initiliazed. If not, head over here and follow the instructions under *Getting started*. It's also a good idea to install `cch24-validator` for validating our solutions after we code them up.
+With that said, let's get to it. I assume you have `cargo` and `shuttle` initiliazed. If not, head over [here](https://console.shuttle.dev/shuttlings/cch24/challenge/-1) and follow the instructions under *Getting started*. It's also a good idea to install `cch24-validator` for validating our solutions after we code them up.
 
 ## Challenge -1
 
