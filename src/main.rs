@@ -1,8 +1,5 @@
 use actix_web::{
-    get,
-    http::{header::LOCATION, Error},
-    web::{self, ServiceConfig},
-    HttpResponse, Responder,
+    get, http::{header::LOCATION, Error}, post, web::{self, ServiceConfig}, HttpMessage, HttpRequest, HttpResponse, Responder
 };
 use serde::Deserialize;
 use shuttle_actix_web::ShuttleActixWeb;
@@ -38,7 +35,7 @@ async fn seek() -> impl Responder {
 async fn produce_dest(query_params: web::Query<QueryParams>) -> Result<HttpResponse, Error> {
     let from_addr: Ipv4Addr = query_params.from.parse().expect("Invalid Ipv4 Address");
     let key_addr: Ipv4Addr = query_params.key.parse().expect("Invalid Ipv4 Address");
-    
+
     let from_octets = from_addr.octets();
     let key_octets = key_addr.octets();
 
@@ -65,7 +62,7 @@ async fn recover_key(query_params: web::Query<ReverseQueryParams>) -> Result<Str
     for (i, (&f, &t)) in from_octets.iter().zip(to_octets.iter()).enumerate() {
         result_octets[i] = t.wrapping_sub(f);
     }
-    
+
     let key_addr = Ipv4Addr::from(result_octets);
 
     // Return the key in standard IPv6 string format
@@ -77,7 +74,7 @@ async fn produce_dest_v6(query_params: web::Query<QueryParams>) -> Result<HttpRe
     // Parse IPv6 addresses
     let from_addr: Ipv6Addr = query_params.from.parse().expect("Invalid Ipv6 Address");
     let key_addr: Ipv6Addr = query_params.key.parse().expect("Invalid Ipv6 Address");
-    
+
     let from_octets = from_addr.octets();
     let key_octets = key_addr.octets();
 
@@ -114,6 +111,31 @@ async fn recover_key_v6(query_params: web::Query<ReverseQueryParams>) -> Result<
     Ok(key_addr.to_string())
 }
 
+#[post("/5/manifest")]
+async fn handle_manifest(req: HttpRequest, _body: String) -> Result<HttpResponse, Error> {
+    let content_type: &str = req.content_type(); // returns a &str representing the Content-Type
+
+    println!("Content-Type: \n{:?}", content_type); 
+                                           // For example, check if it matches "application/toml"
+    if content_type == "application/toml" {
+        // Here you can parse the 'body' as TOML.
+        // Example:
+        // let manifest: toml::Value = toml::from_str(&body).expect("Failed to parse TOML");
+
+        // Extract `package.metadata.orders`,
+        // validate and filter orders,
+        // and then respond accordingly.
+
+        // If no valid orders found, return 204 No Content:
+        // return Ok(HttpResponse::NoContent().finish());
+
+        // Otherwise, return the newline-separated list:
+        return Ok(HttpResponse::Ok().body("Toy car: 2\nLego brick: 230"));
+    } else {
+        // If not "application/toml", you might return an error:
+        return Ok(HttpResponse::UnsupportedMediaType().finish());
+    }
+}
 #[shuttle_runtime::main]
 async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clone + 'static> {
     let config = move |cfg: &mut ServiceConfig| {
@@ -123,6 +145,7 @@ async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clon
         cfg.service(recover_key);
         cfg.service(produce_dest_v6);
         cfg.service(recover_key_v6);
+        cfg.service(handle_manifest);
     };
 
     Ok(config.into())
