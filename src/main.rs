@@ -187,4 +187,3 @@ async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clon
 
     Ok(config.into())
 }
-
