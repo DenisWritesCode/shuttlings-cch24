@@ -93,3 +93,13 @@ With that said, let's get to it. I assume you have `cargo` and `shuttle` initili
 - Considering the only change is the type of IP Address, then it becomes easier to solve for these two, since all we have to do is repeat the steps from Tasks 1 & 2 above - but keeping in mind that we are working with [XOR](https://doc.rust-lang.org/std/ops/trait.BitXor.html) -> denoted by the `^` symbol in rust, and also that we are using Ipv6 addresses.
 ![Console confirms Day 2 Task 3 Done](images/Day2-Task3-console-validated.png)
 - There, all of Day 2 Tasks done!
+
+## Day 0%: The dangerous open Internet
+
+### Task 1: Car go many festivity
+
+![alt text](images/Day5-Task1.png)
+
+- This task requires us to add the cargo crate *toml*. It will be useful in parsing the *.toml* manifest contents that will be passed to our endpoint.
+- This can be done by navigating to the */src/* directory of your project -> Where *cargo.toml* is located and running: `cargo add toml`.
+- 
