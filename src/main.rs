@@ -1,9 +1,14 @@
 use actix_web::{
-    get, http::{header::LOCATION, Error}, post, web::{self, ServiceConfig}, HttpMessage, HttpRequest, HttpResponse, Responder
+    get,
+    http::{header::LOCATION, Error},
+    post,
+    web::{self, ServiceConfig},
+    HttpMessage, HttpRequest, HttpResponse, Responder,
 };
 use serde::Deserialize;
 use shuttle_actix_web::ShuttleActixWeb;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use toml::Value;
 
 /// query Params for Egregrious Encryption
 #[derive(Deserialize)]
@@ -111,26 +116,58 @@ async fn recover_key_v6(query_params: web::Query<ReverseQueryParams>) -> Result<
     Ok(key_addr.to_string())
 }
 
+#[derive(Deserialize)]
+struct Order {
+    item: String,
+    quantity: u32,
+}
+
 #[post("/5/manifest")]
-async fn handle_manifest(req: HttpRequest, _body: String) -> Result<HttpResponse, Error> {
-    let content_type: &str = req.content_type(); // returns a &str representing the Content-Type
+async fn handle_manifest(req: HttpRequest, body: String) -> Result<HttpResponse, Error> {
+    let content_type: &str = req.content_type();
 
-    println!("Content-Type: \n{:?}", content_type); 
-                                           // For example, check if it matches "application/toml"
     if content_type == "application/toml" {
-        // Here you can parse the 'body' as TOML.
-        // Example:
-        // let manifest: toml::Value = toml::from_str(&body).expect("Failed to parse TOML");
+        let manifest: Value = match toml::from_str(&body) {
+            Ok(v) => v,
+            Err(_) => return Ok(HttpResponse::BadRequest().body("Invalid TOML")),
+        };
 
-        // Extract `package.metadata.orders`,
-        // validate and filter orders,
-        // and then respond accordingly.
+        let orders = manifest
+            .get("package")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("orders"))
+            .and_then(|o| o.as_array());
 
-        // If no valid orders found, return 204 No Content:
-        // return Ok(HttpResponse::NoContent().finish());
+        let mut valid_orders: Vec<(String, u32)> = Vec::new();
 
-        // Otherwise, return the newline-separated list:
-        return Ok(HttpResponse::Ok().body("Toy car: 2\nLego brick: 230"));
+        if let Some(order_array) = orders {
+            for order_val in order_array {
+                // Each order should have item (String) and quantity (u32)
+                let item = order_val.get("item").and_then(|i| i.as_str());
+                let quantity = order_val.get("quantity").and_then(|q| q.as_integer());
+
+                if let (Some(item_str), Some(qty)) = (item, quantity) {
+                    // quantity must fit into u32
+                    if qty >= 0 && qty <= u32::MAX as i64 {
+                        valid_orders.push((item_str.to_string(), qty as u32));
+                    }
+                }
+            }
+        }
+
+        if valid_orders.is_empty() {
+            // No valid orders
+            return Ok(HttpResponse::NoContent().finish());
+        } else {
+            // Return newline-separated list of orders
+            let result_str = valid_orders
+                .into_iter()
+                .map(|(item, qty)| format!("{}: {}", item, qty))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            return Ok(HttpResponse::Ok().body(result_str));
+        }
     } else {
         // If not "application/toml", you might return an error:
         return Ok(HttpResponse::UnsupportedMediaType().finish());
@@ -150,3 +187,4 @@ async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clon
 
     Ok(config.into())
 }
+
