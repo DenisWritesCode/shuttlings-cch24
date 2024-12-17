@@ -1,13 +1,15 @@
 use actix_web::{
     get,
-    http::{header::LOCATION, Error},
+    http::header::LOCATION,
     post,
     web::{self, ServiceConfig},
-    HttpMessage, HttpRequest, HttpResponse, Responder,
+    Error, HttpMessage, HttpRequest, HttpResponse, Responder,
 };
+use cargo_manifest::Manifest;
 use serde::Deserialize;
 use shuttle_actix_web::ShuttleActixWeb;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::str::FromStr;
 use toml::Value;
 
 /// query Params for Egregrious Encryption
@@ -116,63 +118,157 @@ async fn recover_key_v6(query_params: web::Query<ReverseQueryParams>) -> Result<
     Ok(key_addr.to_string())
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Order {
     item: String,
     quantity: u32,
 }
 
+#[derive(Debug, Deserialize)]
+struct Metadata {
+    orders: Vec<Order>,
+}
+
+fn check_for_keyword() {}
+
+
+
+fn match_manifest(manifest: Manifest) -> bool {
+
+    println!("Manifest: {:#?}", manifest);
+
+    // match manifest_result {
+    //     Ok(manifest) => {
+    //         // Access the package section
+    //         if let Some(package) = manifest.package {
+    //             // Access the metadata section within the package
+    //             if let Some(metadata_value) = package.metadata {
+    //                 // Serialize metadata_value back to TOML string
+    //                 let metadata_toml = toml::to_string(&metadata_value).map_err(|_| actix_web::error::ErrorBadRequest("Invalid metadata 1"))?;
+
+    //                 // Deserialize the TOML string into the Metadata struct
+    //                 let metadata: Metadata = toml::from_str(&metadata_toml)
+    //                     .map_err(|_| actix_web::error::ErrorBadRequest("Invalid metadata 2"))?;
+
+    //                 let mut valid_orders: Vec<(String, u32)> = Vec::new();
+
+    //                 for order in metadata.orders {
+    //                     // Validate each order
+    //                     // Since 'quantity' is already u32, no need to check its range
+    //                     valid_orders.push((order.item, order.quantity));
+    //                 }
+
+    //                 println!("{:#?}", valid_orders);
+
+    //                 if valid_orders.is_empty() {
+    //                     // No valid orders found
+    //                     println!("\n---------------------\nNo valid orders found\n--------------------\n");
+    //                     return Ok(HttpResponse::NoContent().finish());
+    //                 } else {
+    //                     // Create a newline-separated list of orders
+    //                     let result_str = valid_orders
+    //                         .into_iter()
+    //                         .map(|(item, qty)| format!("{}: {}", item, qty))
+    //                         .collect::<Vec<_>>()
+    //                         .join("\n");
+
+    //                     return Ok(HttpResponse::Ok().body(result_str));
+    //                 }
+    //             } else {
+    //                 // Metadata section is missing
+    //                 return Err(actix_web::error::ErrorBadRequest(
+    //                     "Invalid manifest: Missing metadata",
+    //                 ));
+    //             }
+    //         } else {
+    //             // Package section is missing
+    //             return Err(actix_web::error::ErrorBadRequest(
+    //                 "Invalid manifest: Missing package",
+    //             ));
+    //         }
+    //     }
+    //     Err(_) => {
+    //         // Parsing failed; respond with 400 Bad Request
+    //         println!("\n---------------------\nBad request\n--------------------\n");
+    //         return Err(actix_web::error::ErrorBadRequest("Invalid manifest"));
+    //     }
+    // }
+    
+    // TODO: implement matching logic
+    true
+}
+
 #[post("/5/manifest")]
 async fn handle_manifest(req: HttpRequest, body: String) -> Result<HttpResponse, Error> {
-    let content_type: &str = req.content_type();
+    // Extract the Content-Type header
+    let content_type: &str = req
+        .headers()
+        .get("Content-Type")
+        .and_then(|ct| ct.to_str().ok())
+        .unwrap_or("");
 
-    if content_type == "application/toml" {
-        let manifest: Value = match toml::from_str(&body) {
-            Ok(v) => v,
-            Err(_) => return Ok(HttpResponse::BadRequest().body("Invalid TOML")),
-        };
-
-        let orders = manifest
-            .get("package")
-            .and_then(|p| p.get("metadata"))
-            .and_then(|m| m.get("orders"))
-            .and_then(|o| o.as_array());
-
-        let mut valid_orders: Vec<(String, u32)> = Vec::new();
-
-        if let Some(order_array) = orders {
-            for order_val in order_array {
-                // Each order should have item (String) and quantity (u32)
-                let item = order_val.get("item").and_then(|i| i.as_str());
-                let quantity = order_val.get("quantity").and_then(|q| q.as_integer());
-
-                if let (Some(item_str), Some(qty)) = (item, quantity) {
-                    // quantity must fit into u32
-                    if qty >= 0 && qty <= u32::MAX as i64 {
-                        valid_orders.push((item_str.to_string(), qty as u32));
-                    }
-                }
-            }
+    match content_type {
+        "application/toml" => {
+            return Ok(HttpResponse::Ok().finish());
         }
-
-        if valid_orders.is_empty() {
-            // No valid orders
-            return Ok(HttpResponse::NoContent().finish());
-        } else {
-            // Return newline-separated list of orders
-            let result_str = valid_orders
-                .into_iter()
-                .map(|(item, qty)| format!("{}: {}", item, qty))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            return Ok(HttpResponse::Ok().body(result_str));
+        "application/json" => {
+            return Ok(HttpResponse::Ok().finish());
         }
-    } else {
-        // If not "application/toml", you might return an error:
-        return Ok(HttpResponse::UnsupportedMediaType().finish());
+        "application/yaml" => {
+            return Ok(HttpResponse::Ok().finish());
+        }
+        _ => {
+            // Unsupported Content-Type; respond with 415 Unsupported Media Type
+        return Err(actix_web::error::ErrorUnsupportedMediaType(
+            "Unsupported Media Type",
+        ));
+            // return Ok(HttpResponse::UnsupportedMediaType().finish());
+        }
     }
+
+    // // Ensure the Content-Type is application/toml
+    // if content_type == "application/toml" {
+    //     // Extract the contents into a TOML.
+    //     // Extract the contents into a TOML Table
+    //     let body_toml: Result<toml::Value, _> = toml::from_str(&body);
+
+    //     println!("Body TOML:{:#?}", body_toml);
+
+    //     // Parse the manifest using cargo_manifest::Manifest
+    //     let manifest_result = Manifest::from_slice(body.as_bytes());
+
+    //     println!("Body TOML: {:#?}", body_toml);
+    //     println!("Manifest Result: {:#?}", manifest_result);
+
+    //     return Ok(HttpResponse::Ok().finish());
+
+        
+    // } else if content_type == "application/json" {
+    //     // Extract the contents into a JSON object
+    //     let body_toml: Result<toml::Value, _> = toml::from_str(&body);
+
+    //     // Parse the manifest using cargo_manifest::Manifest
+    //     let manifest_result = Manifest::from_slice(body.as_bytes());
+
+    //     println!("Body TOML: {:#?}", body_toml);
+    //     println!("Manifest Result: {:#?}", manifest_result);
+
+    //     return Ok(HttpResponse::Ok().finish());
+    // } else if content_type == "application/yaml" {
+    //     // Extract the contents into a YAML object
+    //     let body_toml: Result<toml::Value, _> = toml::from_str(&body);
+
+    //     // Parse the manifest using cargo_manifest::Manifest
+    //     let manifest_result = Manifest::from_slice(body.as_bytes());
+
+    //     println!("Body TOML: {:#?}", body_toml);
+    //     println!("Manifest Result: {:#?}", manifest_result);
+
+    //     return Ok(HttpResponse::Ok().finish());
+    // }
+    
 }
+
 #[shuttle_runtime::main]
 async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clone + 'static> {
     let config = move |cfg: &mut ServiceConfig| {
@@ -182,8 +278,11 @@ async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clon
         cfg.service(recover_key);
         cfg.service(produce_dest_v6);
         cfg.service(recover_key_v6);
-        cfg.service(handle_manifest);
+        cfg.service(handle_manifest); // Uncommented and added this line
+        // Remove or comment out the manual registration below
+        // cfg.service((actix_web::resource::Resource("/5/manifest"), web::post().to(handle_manifest)));
     };
 
     Ok(config.into())
 }
+
