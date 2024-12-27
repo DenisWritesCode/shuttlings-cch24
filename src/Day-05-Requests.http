@@ -1,0 +1,70 @@
+
+
+curl http://localhost:8000/5/manifest -H "Content-Type: application/toml" --data '
+[package]
+name = "not-a-gift-order"
+authors = ["Not Santa"]
+keywords = ["Christmas 2024"]
+
+[[package.metadata.orders]]
+item = "Toy car"
+quantity = 2
+
+[[package.metadata.orders]]
+item = "Lego brick"
+quantity = 230
+'
+
+Toy car: 2
+Lego brick: 230
+
+
+// let manifest = Manifest::from_slice(body.as_bytes()).map_err(|e| {
+//     // error!("Manifest Parsing Error: {}", e);
+//     actix_web::error::ErrorBadRequest(format!("Manifest Parsing Error: {}", e))
+// })?;
+// parse_manifest(manifest);
+
+
+
+// return Ok(HttpResponse::Ok().finish());
+
+// // Ensure the Content-Type is application/toml
+// if content_type == "application/toml" {
+//     // Extract the contents into a TOML.
+//     // Extract the contents into a TOML Table
+//     let body_toml: Result<toml::Value, _> = toml::from_str(&body);
+
+//     println!("Body TOML:{:#?}", body_toml);
+
+//     // Parse the manifest using cargo_manifest::Manifest
+//     let manifest_result = Manifest::from_slice(body.as_bytes());
+
+//     println!("Body TOML: {:#?}", body_toml);
+//     println!("Manifest Result: {:#?}", manifest_result);
+
+//     return Ok(HttpResponse::Ok().finish());
+
+// } else if content_type == "application/json" {
+//     // Extract the contents into a JSON object
+//     let body_toml: Result<toml::Value, _> = toml::from_str(&body);
+
+//     // Parse the manifest using cargo_manifest::Manifest
+//     let manifest_result = Manifest::from_slice(body.as_bytes());
+
+//     println!("Body TOML: {:#?}", body_toml);
+//     println!("Manifest Result: {:#?}", manifest_result);
+
+//     return Ok(HttpResponse::Ok().finish());
+// } else if content_type == "application/yaml" {
+//     // Extract the contents into a YAML object
+//     let body_toml: Result<toml::Value, _> = toml::from_str(&body);
+
+//     // Parse the manifest using cargo_manifest::Manifest
+//     let manifest_result = Manifest::from_slice(body.as_bytes());
+
+//     println!("Body TOML: {:#?}", body_toml);
+//     println!("Manifest Result: {:#?}", manifest_result);
+
+//     return Ok(HttpResponse::Ok().finish());
+// }

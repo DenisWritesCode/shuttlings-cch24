@@ -1,16 +1,18 @@
 use actix_web::{
     get,
+    http::header::ContentType,
     http::header::LOCATION,
     post,
     web::{self, ServiceConfig},
-    Error, HttpMessage, HttpRequest, HttpResponse, Responder,
+    Error, HttpRequest, HttpResponse, Responder,
 };
 use cargo_manifest::Manifest;
 use serde::Deserialize;
+use serde_json;
+use serde_yaml;
 use shuttle_actix_web::ShuttleActixWeb;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::str::FromStr;
-use toml::Value;
+use toml;
 
 /// query Params for Egregrious Encryption
 #[derive(Deserialize)]
@@ -118,156 +120,356 @@ async fn recover_key_v6(query_params: web::Query<ReverseQueryParams>) -> Result<
     Ok(key_addr.to_string())
 }
 
-#[derive(Debug, Deserialize)]
-struct Order {
+// ===================================================
+// TASK: /5/manifest - ignoring invalid orders
+// ===================================================
+
+#[post("/5/manifest")]
+async fn handle_manifest(body: String, req: HttpRequest) -> Result<HttpResponse, actix_web::Error> {
+    // 1) Check Content-Type to determine how to parse.
+    let content_type = req
+        .headers()
+        .get("Content-Type")
+        .and_then(|ct| ct.to_str().ok())
+        .unwrap_or_default()
+        .to_lowercase();
+
+    // 2) Basic top-level validation:
+    //    - For TOML: use cargo_manifest::Manifest
+    //    - For JSON / YAML: minimal check that "package.name" is a string
+    // 2) Basic top-level validation + rust-version check:
+    let top_level_ok = match content_type.as_str() {
+        "application/toml" => {
+            cargo_manifest::Manifest::from_slice(body.as_bytes()).is_ok()
+        }
+        "application/json" => serde_json::from_str::<serde_json::Value>(&body)
+            .map(|v| is_valid_package_json(&v))
+            .unwrap_or(false),
+        "application/yaml" => serde_yaml::from_str::<serde_yaml::Value>(&body)
+            .map(|v| is_valid_package_yaml(&v))
+            .unwrap_or(false),
+        _ => {
+            return Ok(HttpResponse::UnsupportedMediaType().finish());
+        }
+    };
+
+    println!("content-type: {:#?}", content_type);
+    println!("Body: {}", &body);
+
+    if !top_level_ok {
+        return Ok(HttpResponse::BadRequest().body("Invalid manifest"));
+    }
+
+    // 3) Parse the same data into our "unified" type, so we can ignore invalid orders.
+    let unified_val = parse_as_unified_value(&body, content_type.as_str())
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid manifest"))?;
+
+    // 4) Check rust-version here, after parsing into UnifiedValue
+    if !has_valid_rust_version(&unified_val) {
+        return Ok(HttpResponse::BadRequest().body("Invalid manifest"));
+    }
+
+    // 5) Check "magic keyword" => "Christmas 2024"
+    if !contains_magic_keyword(&unified_val) {
+        return Ok(HttpResponse::BadRequest().body("Magic keyword not provided"));
+    }
+
+    // 6) Extract valid orders ignoring those with invalid quantity
+    let valid_orders = extract_valid_orders(&unified_val);
+
+    // 7) If none are valid => 204
+    if valid_orders.is_empty() {
+        return Ok(HttpResponse::NoContent().finish());
+    }
+
+    // 8) Print them line-by-line
+    let response_body = orders_to_string(&valid_orders);
+    Ok(HttpResponse::Ok()
+        .content_type(ContentType::plaintext())
+        .body(response_body))
+}
+
+// -----------------------------------------------------------------------------
+// Our "unified" Value enum + parse logic
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum UnifiedValue {
+    Toml(toml::Value),
+    Json(serde_json::Value),
+    Yaml(serde_yaml::Value),
+}
+
+/// Parse the body as either TOML, JSON, or YAML into a UnifiedValue.
+fn parse_as_unified_value(body: &str, content_type: &str) -> Result<UnifiedValue, ()> {
+    match content_type {
+        "application/toml" => {
+            let v = toml::from_str::<toml::Value>(body).map_err(|_| ())?;
+            Ok(UnifiedValue::Toml(v))
+        }
+        "application/json" => {
+            let v = serde_json::from_str::<serde_json::Value>(body).map_err(|_| ())?;
+            Ok(UnifiedValue::Json(v))
+        }
+        "application/yaml" => {
+            let v = serde_yaml::from_str::<serde_yaml::Value>(body).map_err(|_| ())?;
+            Ok(UnifiedValue::Yaml(v))
+        }
+        _ => Err(()), // Should be unreachable because we check beforehand
+    }
+}
+
+fn has_valid_rust_version(value: &UnifiedValue) -> bool {
+    println!("has_valid_rust_version: {:#?}", &value);
+    match value {
+        UnifiedValue::Toml(toml) => {
+            toml.get("package")
+                .and_then(|pkg| pkg.get("rust-version"))
+                .map_or(true, |rv| rv.as_str().map_or(false, |s| s.parse::<f64>().is_ok()))
+        }
+        UnifiedValue::Json(json) => {
+            json.as_object()
+                .and_then(|obj| obj.get("package"))
+                .and_then(|pkg| pkg.get("rust-version"))
+                .map_or(true, |rv| rv.as_str().map_or(false, |s| s.parse::<f64>().is_ok()))
+        }
+        UnifiedValue::Yaml(yaml) => {
+            yaml.as_mapping()
+                .and_then(|obj| obj.get(&serde_yaml::Value::String("package".to_string())))
+                .and_then(|pkg| pkg.get(&serde_yaml::Value::String("rust-version".to_string())))
+                .map_or(true, |rv| rv.as_str().map_or(false, |s| s.parse::<f64>().is_ok()))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Minimal "valid cargo package" checks for JSON/YAML
+// -----------------------------------------------------------------------------
+
+fn is_valid_package_json(v: &serde_json::Value) -> bool {
+    v.get("package")
+        .and_then(|pkg| pkg.get("name"))
+        .and_then(|name| name.as_str())
+        .is_some()
+}
+
+fn is_valid_package_yaml(v: &serde_yaml::Value) -> bool {
+    if let Some(pkg) = v.get("package") {
+        if let Some(name) = pkg.get("name") {
+            return name.as_str().is_some();
+        }
+    }
+    false
+}
+
+// -----------------------------------------------------------------------------
+// This trait is the key. We must implement it for `UnifiedValue`.
+// -----------------------------------------------------------------------------
+
+trait GenericValue {
+    /// Attempt to descend into a nested path: e.g. ["package","metadata"]
+    /// Return the sub-`UnifiedValue` if found.
+    fn get_path(&self, path: &[&str]) -> Option<UnifiedValue>;
+
+    /// Return a string if this node is a string
+    fn as_str(&self) -> Option<&str>;
+
+    /// Return a u32 if this node is an integer within range
+    fn as_u32(&self) -> Option<u32>;
+
+    /// Return an owned Vec of sub-`UnifiedValue` if this node is an array
+    fn as_array(&self) -> Option<Vec<UnifiedValue>>;
+}
+
+// -----------------------------------------------------------------------------
+// Implement the trait for `UnifiedValue`
+// -----------------------------------------------------------------------------
+
+impl GenericValue for UnifiedValue {
+    fn get_path(&self, path: &[&str]) -> Option<UnifiedValue> {
+        match self {
+            UnifiedValue::Toml(t) => {
+                let mut current = t;
+                for key in path {
+                    current = current.get(*key)?; // each step
+                }
+                // Re-wrap in `UnifiedValue::Toml(...)`
+                Some(UnifiedValue::Toml(current.clone()))
+            }
+            UnifiedValue::Json(j) => {
+                let mut current = j;
+                for key in path {
+                    current = current.get(*key)?;
+                }
+                Some(UnifiedValue::Json(current.clone()))
+            }
+            UnifiedValue::Yaml(y) => {
+                let mut current = y;
+                for key in path {
+                    current = match current {
+                        serde_yaml::Value::Mapping(map) => {
+                            let key_val = serde_yaml::Value::String(key.to_string());
+                            map.get(&key_val)?
+                        }
+                        _ => return None,
+                    };
+                }
+                Some(UnifiedValue::Yaml(current.clone()))
+            }
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            UnifiedValue::Toml(t) => t.as_str(),
+            UnifiedValue::Json(j) => j.as_str(),
+            UnifiedValue::Yaml(y) => y.as_str(),
+        }
+    }
+
+    fn as_u32(&self) -> Option<u32> {
+        match self {
+            // TOML: integers are i64
+            UnifiedValue::Toml(t) => t.as_integer().and_then(|val| {
+                if val >= 0 && val <= i64::from(u32::MAX) {
+                    Some(val as u32)
+                } else {
+                    None
+                }
+            }),
+
+            // JSON: as_u64()
+            UnifiedValue::Json(j) => j.as_u64().and_then(|val| {
+                if val <= u64::from(u32::MAX) {
+                    Some(val as u32)
+                } else {
+                    None
+                }
+            }),
+
+            // YAML: i64
+            UnifiedValue::Yaml(y) => match y.as_i64() {
+                Some(i) if i >= 0 && i <= i64::from(u32::MAX) => Some(i as u32),
+                _ => None,
+            },
+        }
+    }
+
+    fn as_array(&self) -> Option<Vec<UnifiedValue>> {
+        match self {
+            UnifiedValue::Toml(t) => {
+                if let toml::Value::Array(arr) = t {
+                    Some(
+                        arr.iter()
+                            .map(|el| UnifiedValue::Toml(el.clone()))
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            }
+            UnifiedValue::Json(j) => {
+                if let Some(arr) = j.as_array() {
+                    Some(
+                        arr.iter()
+                            .map(|el| UnifiedValue::Json(el.clone()))
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            }
+            UnifiedValue::Yaml(y) => {
+                if let serde_yaml::Value::Sequence(seq) = y {
+                    Some(
+                        seq.iter()
+                            .map(|el| UnifiedValue::Yaml(el.clone()))
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Checking the magic keyword
+// -----------------------------------------------------------------------------
+
+fn contains_magic_keyword(value: &UnifiedValue) -> bool {
+    if let Some(keywords_array) = (*value)
+        .get_path(&["package", "keywords"])
+        .and_then(|v| v.as_array())
+    {
+        keywords_array
+            .iter()
+            .any(|val| val.as_str() == Some("Christmas 2024"))
+    } else {
+        false
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Extracting valid orders ignoring invalid fields
+// -----------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct ValidOrder {
     item: String,
     quantity: u32,
 }
 
-#[derive(Debug, Deserialize)]
-struct Metadata {
-    orders: Vec<Order>,
-}
+fn extract_valid_orders(value: &UnifiedValue) -> Vec<ValidOrder> {
+    let orders_arr = match (*value)
+        .get_path(&["package", "metadata", "orders"])
+        .and_then(|u| u.as_array())
+    {
+        Some(arr) => arr,
+        None => return vec![],
+    };
 
-fn check_for_keyword() {}
+    let mut out = vec![];
+    for entry in orders_arr {
+        let item = entry
+            .get_path(&["item"])
+            .and_then(|v| v.as_str().map(|s| s.to_owned()));
 
+        let qty = entry.get_path(&["quantity"]).and_then(|v| v.as_u32());
 
-
-fn match_manifest(manifest: Manifest) -> bool {
-
-    println!("Manifest: {:#?}", manifest);
-
-    // match manifest_result {
-    //     Ok(manifest) => {
-    //         // Access the package section
-    //         if let Some(package) = manifest.package {
-    //             // Access the metadata section within the package
-    //             if let Some(metadata_value) = package.metadata {
-    //                 // Serialize metadata_value back to TOML string
-    //                 let metadata_toml = toml::to_string(&metadata_value).map_err(|_| actix_web::error::ErrorBadRequest("Invalid metadata 1"))?;
-
-    //                 // Deserialize the TOML string into the Metadata struct
-    //                 let metadata: Metadata = toml::from_str(&metadata_toml)
-    //                     .map_err(|_| actix_web::error::ErrorBadRequest("Invalid metadata 2"))?;
-
-    //                 let mut valid_orders: Vec<(String, u32)> = Vec::new();
-
-    //                 for order in metadata.orders {
-    //                     // Validate each order
-    //                     // Since 'quantity' is already u32, no need to check its range
-    //                     valid_orders.push((order.item, order.quantity));
-    //                 }
-
-    //                 println!("{:#?}", valid_orders);
-
-    //                 if valid_orders.is_empty() {
-    //                     // No valid orders found
-    //                     println!("\n---------------------\nNo valid orders found\n--------------------\n");
-    //                     return Ok(HttpResponse::NoContent().finish());
-    //                 } else {
-    //                     // Create a newline-separated list of orders
-    //                     let result_str = valid_orders
-    //                         .into_iter()
-    //                         .map(|(item, qty)| format!("{}: {}", item, qty))
-    //                         .collect::<Vec<_>>()
-    //                         .join("\n");
-
-    //                     return Ok(HttpResponse::Ok().body(result_str));
-    //                 }
-    //             } else {
-    //                 // Metadata section is missing
-    //                 return Err(actix_web::error::ErrorBadRequest(
-    //                     "Invalid manifest: Missing metadata",
-    //                 ));
-    //             }
-    //         } else {
-    //             // Package section is missing
-    //             return Err(actix_web::error::ErrorBadRequest(
-    //                 "Invalid manifest: Missing package",
-    //             ));
-    //         }
-    //     }
-    //     Err(_) => {
-    //         // Parsing failed; respond with 400 Bad Request
-    //         println!("\n---------------------\nBad request\n--------------------\n");
-    //         return Err(actix_web::error::ErrorBadRequest("Invalid manifest"));
-    //     }
-    // }
-    
-    // TODO: implement matching logic
-    true
-}
-
-#[post("/5/manifest")]
-async fn handle_manifest(req: HttpRequest, body: String) -> Result<HttpResponse, Error> {
-    // Extract the Content-Type header
-    let content_type: &str = req
-        .headers()
-        .get("Content-Type")
-        .and_then(|ct| ct.to_str().ok())
-        .unwrap_or("");
-
-    match content_type {
-        "application/toml" => {
-            return Ok(HttpResponse::Ok().finish());
-        }
-        "application/json" => {
-            return Ok(HttpResponse::Ok().finish());
-        }
-        "application/yaml" => {
-            return Ok(HttpResponse::Ok().finish());
-        }
-        _ => {
-            // Unsupported Content-Type; respond with 415 Unsupported Media Type
-        return Err(actix_web::error::ErrorUnsupportedMediaType(
-            "Unsupported Media Type",
-        ));
-            // return Ok(HttpResponse::UnsupportedMediaType().finish());
+        // Validate item and quantity before adding the order
+        if let (Some(i), Some(q)) = (item, qty) {
+            out.push(ValidOrder {
+                item: i,
+                quantity: q,
+            });
         }
     }
-
-    // // Ensure the Content-Type is application/toml
-    // if content_type == "application/toml" {
-    //     // Extract the contents into a TOML.
-    //     // Extract the contents into a TOML Table
-    //     let body_toml: Result<toml::Value, _> = toml::from_str(&body);
-
-    //     println!("Body TOML:{:#?}", body_toml);
-
-    //     // Parse the manifest using cargo_manifest::Manifest
-    //     let manifest_result = Manifest::from_slice(body.as_bytes());
-
-    //     println!("Body TOML: {:#?}", body_toml);
-    //     println!("Manifest Result: {:#?}", manifest_result);
-
-    //     return Ok(HttpResponse::Ok().finish());
-
-        
-    // } else if content_type == "application/json" {
-    //     // Extract the contents into a JSON object
-    //     let body_toml: Result<toml::Value, _> = toml::from_str(&body);
-
-    //     // Parse the manifest using cargo_manifest::Manifest
-    //     let manifest_result = Manifest::from_slice(body.as_bytes());
-
-    //     println!("Body TOML: {:#?}", body_toml);
-    //     println!("Manifest Result: {:#?}", manifest_result);
-
-    //     return Ok(HttpResponse::Ok().finish());
-    // } else if content_type == "application/yaml" {
-    //     // Extract the contents into a YAML object
-    //     let body_toml: Result<toml::Value, _> = toml::from_str(&body);
-
-    //     // Parse the manifest using cargo_manifest::Manifest
-    //     let manifest_result = Manifest::from_slice(body.as_bytes());
-
-    //     println!("Body TOML: {:#?}", body_toml);
-    //     println!("Manifest Result: {:#?}", manifest_result);
-
-    //     return Ok(HttpResponse::Ok().finish());
-    // }
-    
+    out
 }
+
+// -----------------------------------------------------------------------------
+// Convert orders to string
+// -----------------------------------------------------------------------------
+
+fn orders_to_string(orders: &[ValidOrder]) -> String {
+    orders
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            if i == 0 {
+                format!("{}: {}", o.item, o.quantity)
+            } else {
+                format!("\n{}: {}", o.item, o.quantity)
+            }
+        })
+        .collect()
+}
+
+// -----------------------------------------------------------------------------
+// Shuttle + Actix main
+// -----------------------------------------------------------------------------
 
 #[shuttle_runtime::main]
 async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clone + 'static> {
@@ -278,11 +480,8 @@ async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clon
         cfg.service(recover_key);
         cfg.service(produce_dest_v6);
         cfg.service(recover_key_v6);
-        cfg.service(handle_manifest); // Uncommented and added this line
-        // Remove or comment out the manual registration below
-        // cfg.service((actix_web::resource::Resource("/5/manifest"), web::post().to(handle_manifest)));
+        cfg.service(handle_manifest);
     };
 
     Ok(config.into())
 }
-
