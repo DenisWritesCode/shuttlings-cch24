@@ -2,30 +2,25 @@ use actix_web::{
     get,
     http::header::ContentType,
     http::header::LOCATION,
+    http::StatusCode,
     post,
     web::{self, ServiceConfig},
     Error, HttpRequest, HttpResponse, Responder,
 };
-use cargo_manifest::Manifest;
+use leaky_bucket::RateLimiter;
 use serde::Deserialize;
 use serde_json;
 use serde_yaml;
 use shuttle_actix_web::ShuttleActixWeb;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{Mutex, MutexGuard};
 use toml;
 
-/// query Params for Egregrious Encryption
-#[derive(Deserialize)]
-struct QueryParams {
-    from: String,
-    key: String,
-}
-
-#[derive(Deserialize)]
-struct ReverseQueryParams {
-    from: String,
-    to: String,
-}
+// -----------------------------------------------------------------------------
+// TASK: -1.
+// -----------------------------------------------------------------------------
 
 #[get("/")]
 async fn hello_world() -> &'static str {
@@ -38,6 +33,21 @@ async fn seek() -> impl Responder {
     HttpResponse::Found()
         .append_header((LOCATION, "https://www.youtube.com/watch?v=9Gc4QTqslN4"))
         .finish()
+}
+
+// -----------------------------------------------------------------------------
+// TASK: 2
+// -----------------------------------------------------------------------------
+#[derive(Deserialize)]
+struct QueryParams {
+    from: String,
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct ReverseQueryParams {
+    from: String,
+    to: String,
 }
 
 #[get("/2/dest")]
@@ -60,7 +70,7 @@ async fn produce_dest(query_params: web::Query<QueryParams>) -> Result<HttpRespo
 
 #[get("/2/key")]
 async fn recover_key(query_params: web::Query<ReverseQueryParams>) -> Result<String, Error> {
-    // Extract the 'from' & 'to'
+    // Extract 'from' & 'to'
     let from_addr: Ipv4Addr = query_params.from.parse().expect("Invalid Ipv4 Address");
     let to_addr: Ipv4Addr = query_params.to.parse().expect("Invalid Ipv4 Address");
 
@@ -90,6 +100,7 @@ async fn produce_dest_v6(query_params: web::Query<QueryParams>) -> Result<HttpRe
     // XOR each corresponding octet
     let mut result_octets = [0u8; 16];
     for (i, (&f, &k)) in from_octets.iter().zip(key_octets.iter()).enumerate() {
+        // ^ is the XOR operator
         result_octets[i] = f ^ k;
     }
 
@@ -120,13 +131,9 @@ async fn recover_key_v6(query_params: web::Query<ReverseQueryParams>) -> Result<
     Ok(key_addr.to_string())
 }
 
-// ===================================================
-// TASK: /5/manifest - ignoring invalid orders
-// ===================================================
-
 #[post("/5/manifest")]
 async fn handle_manifest(body: String, req: HttpRequest) -> Result<HttpResponse, actix_web::Error> {
-    // 1) Check Content-Type to determine how to parse.
+    // Extract content-type
     let content_type = req
         .headers()
         .get("Content-Type")
@@ -134,14 +141,9 @@ async fn handle_manifest(body: String, req: HttpRequest) -> Result<HttpResponse,
         .unwrap_or_default()
         .to_lowercase();
 
-    // 2) Basic top-level validation:
-    //    - For TOML: use cargo_manifest::Manifest
-    //    - For JSON / YAML: minimal check that "package.name" is a string
-    // 2) Basic top-level validation + rust-version check:
+    // Parse the body's content according to content-type
     let top_level_ok = match content_type.as_str() {
-        "application/toml" => {
-            cargo_manifest::Manifest::from_slice(body.as_bytes()).is_ok()
-        }
+        "application/toml" => cargo_manifest::Manifest::from_slice(body.as_bytes()).is_ok(),
         "application/json" => serde_json::from_str::<serde_json::Value>(&body)
             .map(|v| is_valid_package_json(&v))
             .unwrap_or(false),
@@ -153,9 +155,7 @@ async fn handle_manifest(body: String, req: HttpRequest) -> Result<HttpResponse,
         }
     };
 
-    println!("content-type: {:#?}", content_type);
-    println!("Body: {}", &body);
-
+    // Inavlid Manifest gets a 400 status code.
     if !top_level_ok {
         return Ok(HttpResponse::BadRequest().body("Invalid manifest"));
     }
@@ -222,23 +222,26 @@ fn parse_as_unified_value(body: &str, content_type: &str) -> Result<UnifiedValue
 fn has_valid_rust_version(value: &UnifiedValue) -> bool {
     println!("has_valid_rust_version: {:#?}", &value);
     match value {
-        UnifiedValue::Toml(toml) => {
-            toml.get("package")
-                .and_then(|pkg| pkg.get("rust-version"))
-                .map_or(true, |rv| rv.as_str().map_or(false, |s| s.parse::<f64>().is_ok()))
-        }
-        UnifiedValue::Json(json) => {
-            json.as_object()
-                .and_then(|obj| obj.get("package"))
-                .and_then(|pkg| pkg.get("rust-version"))
-                .map_or(true, |rv| rv.as_str().map_or(false, |s| s.parse::<f64>().is_ok()))
-        }
-        UnifiedValue::Yaml(yaml) => {
-            yaml.as_mapping()
-                .and_then(|obj| obj.get(&serde_yaml::Value::String("package".to_string())))
-                .and_then(|pkg| pkg.get(&serde_yaml::Value::String("rust-version".to_string())))
-                .map_or(true, |rv| rv.as_str().map_or(false, |s| s.parse::<f64>().is_ok()))
-        }
+        UnifiedValue::Toml(toml) => toml
+            .get("package")
+            .and_then(|pkg| pkg.get("rust-version"))
+            .map_or(true, |rv| {
+                rv.as_str().map_or(false, |s| s.parse::<f64>().is_ok())
+            }),
+        UnifiedValue::Json(json) => json
+            .as_object()
+            .and_then(|obj| obj.get("package"))
+            .and_then(|pkg| pkg.get("rust-version"))
+            .map_or(true, |rv| {
+                rv.as_str().map_or(false, |s| s.parse::<f64>().is_ok())
+            }),
+        UnifiedValue::Yaml(yaml) => yaml
+            .as_mapping()
+            .and_then(|obj| obj.get(&serde_yaml::Value::String("package".to_string())))
+            .and_then(|pkg| pkg.get(&serde_yaml::Value::String("rust-version".to_string())))
+            .map_or(true, |rv| {
+                rv.as_str().map_or(false, |s| s.parse::<f64>().is_ok())
+            }),
     }
 }
 
@@ -468,12 +471,48 @@ fn orders_to_string(orders: &[ValidOrder]) -> String {
 }
 
 // -----------------------------------------------------------------------------
+// Day 9: Task 1: The Leaky Bucket of Milk
+// -----------------------------------------------------------------------------
+
+struct AppState {
+    limiter: Arc<Mutex<RateLimiter>>,
+}
+
+#[post("/9/milk")]
+async fn milk(state: web::Data<AppState>) -> impl Responder {
+    // Attempt to acquire the lock without waiting
+    let limiter = state.limiter.lock().await;
+    println!("limiter: {:#?}", &limiter);
+    match limiter.try_acquire(1) {
+        true => HttpResponse::Ok().body("Milk withdrawn\n"),
+        false => HttpResponse::TooManyRequests().body("No milk available\n"),
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Shuttle + Actix main
 // -----------------------------------------------------------------------------
 
 #[shuttle_runtime::main]
 async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clone + 'static> {
+    // Build the RateLimiter
+    let rate_limiter = RateLimiter::builder()
+        .max(5) // Maximum tokens
+        .initial(5)
+        .interval(Duration::from_secs(1)) // Refill every 1 second
+        .refill(1) // Refill 1 token at a time
+        .build();
+
+    // Create our shared state with a Mutex
+    let app_state = AppState {
+        limiter: Arc::new(Mutex::new(rate_limiter)),
+    };
+
+    // Wrap in Actix's web::Data
+    let shared_data = web::Data::new(app_state);
+
     let config = move |cfg: &mut ServiceConfig| {
+        cfg.app_data(shared_data.clone());
         cfg.service(hello_world);
         cfg.service(seek);
         cfg.service(produce_dest);
@@ -481,6 +520,7 @@ async fn main() -> ShuttleActixWeb<impl FnOnce(&mut ServiceConfig) + Send + Clon
         cfg.service(produce_dest_v6);
         cfg.service(recover_key_v6);
         cfg.service(handle_manifest);
+        cfg.service(milk);
     };
 
     Ok(config.into())
