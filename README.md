@@ -93,3 +93,31 @@ With that said, let's get to it. I assume you have `cargo` and `shuttle` initili
 - Considering the only change is the type of IP Address, then it becomes easier to solve for these two, since all we have to do is repeat the steps from Tasks 1 & 2 above - but keeping in mind that we are working with [XOR](https://doc.rust-lang.org/std/ops/trait.BitXor.html) -> denoted by the `^` symbol in rust, and also that we are using Ipv6 addresses.
 ![Console confirms Day 2 Task 3 Done](images/Day2-Task3-console-validated.png)
 - There, all of Day 2 Tasks done!
+
+## Day 0%: The dangerous open Internet
+
+### Task 1: Car go many festivity
+
+![alt text](images/Day5-Task1.png)
+
+- This task requires us to add the cargo crate [toml](https://crates.io/crates/toml). It will be useful in parsing the *.toml* manifest contents that will be passed to our endpoint.
+- This can be done by navigating to the *root* directory of your project -> Where *cargo.toml* is located and running: `cargo add toml`.
+- Then we create the endpoint function and accept the *request* and *body* params.
+- We can then extract the *content-type* [atrribute](https://docs.rs/http/latest/http/header/constant.CONTENT_TYPE.html) from the *request*.
+- For requests that are not of the format *application/toml*, we return a status *415* the error code for [unsupported media type](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/415).
+- For requests with the correct content-type - *application/toml* - we, use the crate *toml* to extract the contents of our data passed in the body of the request. We parse them into a Table ( an array of unordered key-value pairs, in rust). Otherwise, we return a *204 No Content* response for invalid orders.
+- Then we traverse our Table, and attempt to retrieve the *package* array. *And then* we access the *metadata* table inside of *package*. *And then* we access the *orders* array inside the *metadata* array which is inside *package* array. From these orders, we create a new array using the values inside *orders*.
+![orders example using the first example](images/Day5-Task1-Orders-Structure.png)
+
+- If we have valid orders, then we traverse the resultant Table of Vectors, and add each *item* and *quantity* into our resulting Vector.
+- From here, if the vector is empty, we return a *204 No Content*, otherwise, we join all orders and quantities with a new line and return that.
+- Running `cch24-validator 5` shows us that we have cracked it!!!
+![alt text](images/Day5-Task1-console-validated.png)
+
+### Task 2: How to make crates.io
+
+![Day 5, Task 2](images/Day5-Task2-Challenge.png)
+
+- For this task, we need to parse the manifest passed in the body of our request, confirm if it's valid or not. If it's valid, we proceed with the logic from the above challenges. If it's not valid, we respond with a *400 Bad Request* & *Invalid Manifest* for the body.
+- For parsing the manifest, we can use [cargo-manifest](https://crates.io/crates/cargo-manifest) by running `cargo add cargo-manifest` in the project's root directory.
+- 
